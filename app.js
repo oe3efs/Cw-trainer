@@ -12,7 +12,7 @@ function config(){const first=integer('startLesson',1,40),last=integer('endLesso
 function generate(s){return Array.from({length:s.count},()=>{const n=s.lengthMode==='random'?2+Math.floor(Math.random()*6):Number(s.lengthMode);return Array.from({length:n},()=>s.abc[Math.floor(Math.random()*s.abc.length)]).join('');});}
 function addTone(out,code,dot,letterGap,after=0){for(let i=0;i<code.length;i++){out.push({duration:(code[i]==='-'?3:1)*dot,tone:true});if(i<code.length-1)out.push({duration:dot,tone:false});}if(after)out.push({duration:after,tone:false});}
 function makeEvents(s){const dot=1.2/s.char;const ratio=s.char/s.eff;const extra=Math.max(0,(50*ratio-31)/19);const letterGap=3*extra*dot,wordGap=(s.gapMode==='standard'?7:7*extra)*dot;let ev=[];const gap=t=>ev.push({duration:t,tone:false});if(s.delay)gap(s.delay);if(s.prosigns){for(const ch of 'VVV'){addTone(ev,CODE[ch],dot,letterGap,letterGap);}addTone(ev,CODE['='],dot,letterGap,wordGap);}
- groups.forEach((group,index)=>{if(index>0)gap(wordGap);for(let i=0;i<group.length;i++)addTone(ev,CODE[group[i]],dot,letterGap,i<group.length-1?letterGap:0);ev.push({duration:0,tone:false,complete:index+1});});if(s.prosigns){gap(.65);addTone(ev,'.-.-.',dot,0,0);}return ev;}
+ groups.forEach((group,index)=>{if(index>0)gap(wordGap);ev.push({duration:0,tone:false,groupStart:index});for(let i=0;i<group.length;i++)addTone(ev,CODE[group[i]],dot,letterGap,i<group.length-1?letterGap:0);ev.push({duration:0,tone:false,complete:index+1});});if(s.prosigns){gap(.65);addTone(ev,'.-.-.',dot,0,0);}return ev;}
 function setStatus(msg){$('status').textContent=msg;}
 function controls(){if(typeof updateReadControls==='function')updateReadControls();$('pause').disabled=!playing;$('pause').textContent=paused?'▶ Fortsetzen':'⏸ Pause';$('repeat').disabled=!groups.length;$('show').disabled=!groups.length;}
 function stopAudio(){if(timer){clearTimeout(timer);timer=null;}if(osc){try{osc.stop();}catch(e){}try{osc.disconnect();}catch(e){}osc=null;}if(gain){try{gain.disconnect();}catch(e){}gain=null;}}
@@ -20,16 +20,45 @@ function stop(){stopReading();token++;stopAudio();playing=false;paused=false;con
 function reveal(){if(!groups.length)return;$('solution').textContent=groups.join('  ').replace(/((?:\S+\s+){6})/g,'$1\n');}
 function complete(){stop();done=true;completed=groups.length;$('counter').textContent=`${completed} / ${groups.length}`;$('bar').style.width='100%';setStatus('Übung abgeschlossen');reveal();updateReadControls();}
 function progress(){ $('counter').textContent=`${completed} / ${groups.length}`;$('bar').style.width=`${groups.length?100*completed/groups.length:0}%`;}
+// Bei Fortsetzen die zuletzt nicht vollständig gesendete Gruppe wiederholen.
+// Einleitung VVV = wird immer unmittelbar davor neu gesendet.
+function resumeFromGroup(){
+ const index=Math.min(completed,groups.length-1);
+ const start=events.findIndex(e=>e.groupStart===index);
+ if(start<0)return;
+ const dot=1.2/settings.char;
+ const ratio=settings.char/settings.eff;
+ const extra=Math.max(0,(50*ratio-31)/19);
+ const letterGap=3*extra*dot;
+ const wordGap=(settings.gapMode==='standard'?7:7*extra)*dot;
+ const intro=[];
+ for(const ch of 'VVV')addTone(intro,CODE[ch],dot,letterGap,letterGap);
+ addTone(intro,CODE['='],dot,letterGap,wordGap);
+ // Die noch ausstehenden Events bleiben unverändert, einschließlich der Gruppenenden.
+ events=intro.concat(events.slice(start));
+ cursor=0;
+}
 function playNext(myToken){if(myToken!==token||!playing||paused)return;if(cursor>=events.length){complete();return;}const e=events[cursor++];if(e.complete){completed=e.complete;progress();playNext(myToken);return;}if(e.duration<=0){playNext(myToken);return;}const now=ctx.currentTime;startedAt=now;offset=e.duration; if(e.tone){osc=ctx.createOscillator();gain=ctx.createGain();osc.type='sine';osc.frequency.value=settings.tone;osc.connect(gain);gain.connect(ctx.destination);const ramp=Math.min(.004,e.duration/3);gain.gain.setValueAtTime(0,now);gain.gain.linearRampToValueAtTime(.26,now+ramp);gain.gain.setValueAtTime(.26,now+e.duration-ramp);gain.gain.linearRampToValueAtTime(0,now+e.duration);osc.start(now);osc.stop(now+e.duration);}
  timer=setTimeout(()=>{timer=null;if(osc){try{osc.disconnect();}catch(e){}osc=null;}if(gain){try{gain.disconnect();}catch(e){}gain=null;}playNext(myToken);},e.duration*1000);}
 async function begin(reuse=false){let s;try{s=reuse?settings:config();if(!s)throw Error('Bitte zuerst eine Übung starten.');}catch(e){setStatus(e.message);return;}stop();settings=s;if(!reuse)groups=generate(s);events=makeEvents(s);cursor=0;completed=0;done=false;progress();$('solution').textContent='Die Zeichen erscheinen nach Abschluss der Übung.';updateReadControls();save();try{ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();}catch(e){setStatus('Audio konnte nicht gestartet werden.');return;}playing=true;paused=false;controls();setStatus('CW-Ausgabe läuft');const myToken=token;playNext(myToken);}
 function pauseResume(){if(!playing)return;if(!paused){paused=true;if(timer){clearTimeout(timer);timer=null;}if(osc){try{osc.stop();}catch(e){}try{osc.disconnect();}catch(e){}osc=null;}if(gain){try{gain.disconnect();}catch(e){}gain=null;} // aktuelle Einheit wird bei Fortsetzen vollständig erneut gesendet
- cursor=Math.max(0,cursor-1);setStatus('Pausiert');}else{paused=false;setStatus('CW-Ausgabe läuft');playNext(token);}controls();}
+ cursor=Math.max(0,cursor-1);setStatus('Pausiert');}else{resumeFromGroup();paused=false;setStatus('CW-Ausgabe läuft – VVV = und Gruppe erneut');playNext(token);}controls();}
 $('start').addEventListener('click',()=>begin(false));$('repeat').addEventListener('click',()=>begin(true));$('pause').addEventListener('click',pauseResume);$('show').addEventListener('click',()=>{reveal();setStatus(playing?'Lösung vorzeitig angezeigt':done?'Übung abgeschlossen':'Lösung angezeigt');});document.querySelectorAll('input,select').forEach(e=>e.addEventListener('change',()=>{updateAlphabet();save();}));
 
 
 // Offline-friendly iOS speech synthesis; only the actual exercise groups are read.
 const spoken={A:'Alfa',B:'Bravo',C:'Charlie',D:'Delta',E:'Echo',F:'Foxtrot',G:'Golf',H:'Hotel',I:'India',J:'Juliett',K:'Kilo',L:'Lima',M:'Mike',N:'November',O:'Oscar',P:'Papa',Q:'Quebec',R:'Romeo',S:'Sierra',T:'Tango',U:'Uniform',V:'Victor',W:'Whiskey',X:'X-ray',Y:'Yankee',Z:'Zulu','0':'Null','1':'Eins','2':'Zwei','3':'Drei','4':'Vier','5':'Fünf','6':'Sechs','7':'Sieben','8':'Acht','9':'Neun','.':'Punkt',',':'Komma','=':'Ist gleich','?':'Fragezeichen','/':'Schrägstrich',':':'Doppelpunkt','-':'Bindestrich','+':'Pluszeichen','@':'At-Zeichen'};
+// Eine einzige deutschsprachige Systemstimme für alle Zeichen verwenden.
+// So erfolgt kein hörbarer Stimmenwechsel zwischen ICAO-Wörtern und Sonderzeichen.
+let readVoice=null;
+function chooseReadVoice(){
+ if(!('speechSynthesis'in window))return;
+ const voices=window.speechSynthesis.getVoices();
+ const german=voices.filter(v=>/^de([-_]|$)/i.test(v.lang));
+ readVoice=german.find(v=>v.localService&&/^de[-_]AT$/i.test(v.lang)) ||
+           german.find(v=>v.localService) || german[0] || null;
+}
+if('speechSynthesis'in window){chooseReadVoice();window.speechSynthesis.addEventListener?.('voiceschanged',chooseReadVoice);}
 let readItems=[],readPos=0,readActive=false,readPaused=false,readGeneration=0,readTimer=null,readOsc=null,readGain=null;
 function updateReadControls(){const available=done&&!playing&&groups.length>0&&('speechSynthesis'in window);$('readStart').disabled=!available||readActive;$('readAgain').disabled=!available||readActive;$('readPause').disabled=!readActive;$('readPause').textContent=readPaused?'▶ Fortsetzen':'⏸ Pause';$('readStop').disabled=!readActive;}
 function clearReadTimer(){if(readTimer!==null){clearTimeout(readTimer);readTimer=null;}if(readOsc){try{readOsc.stop();}catch(e){}try{readOsc.disconnect();}catch(e){}readOsc=null;}if(readGain){try{readGain.disconnect();}catch(e){}readGain=null;}}
@@ -37,9 +66,9 @@ function stopReading(){readGeneration++;clearReadTimer();if('speechSynthesis'in 
 function readWait(ms,gen){readTimer=setTimeout(()=>{readTimer=null;readNext(gen);},ms);}
 function readPip(gen){try{const ac=ctx||(ctx=new (window.AudioContext||window.webkitAudioContext)());ac.resume().catch(()=>{});const t=ac.currentTime;readOsc=ac.createOscillator();readGain=ac.createGain();readOsc.frequency.value=Number($('tone').value)||700;readOsc.type='sine';readGain.gain.setValueAtTime(0,t);readGain.gain.linearRampToValueAtTime(.22,t+.008);readGain.gain.setValueAtTime(.22,t+.09);readGain.gain.linearRampToValueAtTime(0,t+.11);readOsc.connect(readGain);readGain.connect(ac.destination);readOsc.start(t);readOsc.stop(t+.11);}catch(e){}readWait(125,gen);}
 function readNext(gen){if(gen!==readGeneration||!readActive||readPaused)return;if(readPos>=readItems.length){readActive=false;$('readStatus').textContent='Vorlesen abgeschlossen.';updateReadControls();return;}const item=readItems[readPos++];if(item==='gap'){$('readStatus').textContent='Gruppenwechsel';if($('readBeep').value==='on'){readPip(gen);}else{readWait(0,gen);}return;}if(item==='wordgap'){readWait(Math.max(0,Number($('readWordGap').value)||0)*1000,gen);return;}
-const utter=new SpeechSynthesisUtterance(spoken[item]||item);utter.lang= /^[0-9.,=?/:+@-]$/.test(item)?'de-DE':'en-US';utter.rate=Number($('readRate').value)||1;utter.onend=()=>{if(gen!==readGeneration||!readActive||readPaused)return;readWait(Math.max(0,Number($('readCharGap').value)||0)*1000,gen);};utter.onerror=()=>{if(gen===readGeneration&&readActive&&!readPaused)readWait(50,gen);};$('readStatus').textContent='Vorlesen: '+(spoken[item]||item);window.speechSynthesis.speak(utter);
+const utter=new SpeechSynthesisUtterance(spoken[item]||item);utter.lang='de-DE';if(readVoice)utter.voice=readVoice;utter.rate=Number($('readRate').value)||1;utter.onend=()=>{if(gen!==readGeneration||!readActive||readPaused)return;readWait(Math.max(0,Number($('readCharGap').value)||0)*1000,gen);};utter.onerror=()=>{if(gen===readGeneration&&readActive&&!readPaused)readWait(50,gen);};$('readStatus').textContent='Vorlesen: '+(spoken[item]||item);window.speechSynthesis.speak(utter);
 }
-function startReading(){if(!done||playing||!groups.length||!('speechSynthesis'in window))return;stopReading();readItems=[];groups.forEach((g,i)=>{if(i)readItems.push('gap','wordgap');for(const ch of g)readItems.push(ch);});readPos=0;readActive=true;readPaused=false;const gen=readGeneration;updateReadControls();readNext(gen);}
+function startReading(){chooseReadVoice();if(!done||playing||!groups.length||!('speechSynthesis'in window))return;stopReading();readItems=[];groups.forEach((g,i)=>{if(i)readItems.push('gap','wordgap');for(const ch of g)readItems.push(ch);});readPos=0;readActive=true;readPaused=false;const gen=readGeneration;updateReadControls();readNext(gen);}
 function pauseReading(){if(!readActive)return;if(!readPaused){readPaused=true;clearReadTimer();window.speechSynthesis.cancel();readPos=Math.max(0,readPos-1);$('readStatus').textContent='Vorlesen pausiert.';}else{readPaused=false;readNext(readGeneration);}updateReadControls();}
 $('readStart').addEventListener('click',startReading);$('readAgain').addEventListener('click',startReading);$('readPause').addEventListener('click',pauseReading);$('readStop').addEventListener('click',stopReading);
 
